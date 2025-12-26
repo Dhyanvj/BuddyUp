@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "610806405572",
+    "project_id": "buddyup-83975",
+    "storage_bucket": "buddyup-83975.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:610806405572:android:df385168cd719d8ea6ec91",
+        "android_client_info": {
+          "package_name": "com.auralogic.buddyup"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBHVeH8jLm9PBleXVq0dJ1QmVQ0AMfgc6A"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

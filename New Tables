@@ -1,0 +1,188 @@
+
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+
+CREATE TABLE IF NOT EXISTS profiles (
+  id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  full_name TEXT,
+  avatar_url TEXT,
+  phone_number TEXT,
+  bio TEXT,
+  rating DECIMAL(2,1) DEFAULT 0,
+  total_trips INTEGER DEFAULT 0,
+  email_verified BOOLEAN DEFAULT FALSE,
+  phone_verified BOOLEAN DEFAULT FALSE,
+  id_verified BOOLEAN DEFAULT FALSE,
+  push_token TEXT,
+  platform TEXT CHECK (platform IN ('ios', 'android', NULL)),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, email, full_name)
+  VALUES (NEW.id, NEW.email, NEW.raw_user_meta_data->>'full_name')
+  ON CONFLICT (id) DO NOTHING;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+
+CREATE TRIGGER on_auth_user_created
+AFTER INSERT ON auth.users
+FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+
+CREATE TABLE IF NOT EXISTS trips (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  creator_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  pickup_location TEXT NOT NULL,
+  pickup_lat DECIMAL(10,8) NOT NULL,
+  pickup_lng DECIMAL(11,8) NOT NULL,
+  pickup_geography GEOGRAPHY(POINT, 4326),
+  dropoff_location TEXT NOT NULL,
+  dropoff_lat DECIMAL(10,8) NOT NULL,
+  dropoff_lng DECIMAL(11,8) NOT NULL,
+  departure_time TIMESTAMPTZ NOT NULL,
+  service_type TEXT NOT NULL,
+  available_seats INTEGER NOT NULL CHECK (available_seats > 0),
+  total_seats INTEGER NOT NULL,
+  estimated_cost DECIMAL(10,2),
+  status TEXT DEFAULT 'active'
+    CHECK (status IN ('active','in_progress','completed','cancelled')),
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+
+CREATE OR REPLACE FUNCTION set_pickup_geography()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.pickup_geography =
+    ST_SetSRID(ST_MakePoint(NEW.pickup_lng, NEW.pickup_lat), 4326)::geography;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_set_pickup_geography ON trips;
+
+CREATE TRIGGER trigger_set_pickup_geography
+BEFORE INSERT OR UPDATE ON trips
+FOR EACH ROW EXECUTE FUNCTION set_pickup_geography();
+
+
+CREATE INDEX IF NOT EXISTS idx_trips_pickup_geography
+  ON trips USING GIST (pickup_geography);
+
+CREATE INDEX IF NOT EXISTS idx_trips_departure_time
+  ON trips (departure_time);
+
+CREATE INDEX IF NOT EXISTS idx_trips_status
+  ON trips (status);
+
+
+CREATE TABLE IF NOT EXISTS trip_participants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  seats_requested INTEGER DEFAULT 1,
+  status TEXT DEFAULT 'pending'
+    CHECK (status IN ('pending','accepted','rejected','left')),
+  payment_status TEXT DEFAULT 'unpaid'
+    CHECK (payment_status IN ('unpaid','pending','paid','refunded')),
+  joined_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (trip_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_participants_trip ON trip_participants(trip_id);
+CREATE INDEX IF NOT EXISTS idx_participants_user ON trip_participants(user_id);
+
+
+CREATE TABLE IF NOT EXISTS messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE NOT NULL,
+  sender_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  content TEXT NOT NULL,
+  message_type TEXT DEFAULT 'text'
+    CHECK (message_type IN ('text','system')),
+  read_by UUID[] DEFAULT ARRAY[]::UUID[],
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_trip
+  ON messages(trip_id, created_at DESC);
+
+
+CREATE TABLE IF NOT EXISTS reviews (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE NOT NULL,
+  reviewer_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  reviewee_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  rating INTEGER CHECK (rating BETWEEN 1 AND 5) NOT NULL,
+  comment TEXT,
+  tags TEXT[],
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (trip_id, reviewer_id, reviewee_id)
+);
+
+CREATE OR REPLACE FUNCTION update_user_rating()
+RETURNS TRIGGER AS $$
+BEGIN
+  UPDATE profiles
+  SET rating = (
+    SELECT AVG(rating)::DECIMAL(2,1)
+    FROM reviews
+    WHERE reviewee_id = NEW.reviewee_id
+  )
+  WHERE id = NEW.reviewee_id;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DROP TRIGGER IF EXISTS trigger_update_rating ON reviews;
+
+CREATE TRIGGER trigger_update_rating
+AFTER INSERT ON reviews
+FOR EACH ROW EXECUTE FUNCTION update_user_rating();
+
+
+CREATE TABLE IF NOT EXISTS payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  amount DECIMAL(10,2) NOT NULL,
+  stripe_payment_intent_id TEXT,
+  status TEXT DEFAULT 'pending'
+    CHECK (status IN ('pending','succeeded','failed','refunded')),
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE,
+  type TEXT NOT NULL,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user
+  ON notifications(user_id, created_at DESC);
+
+
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trips ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trip_participants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;

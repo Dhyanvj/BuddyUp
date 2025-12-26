@@ -1,0 +1,372 @@
+-- Enable PostGIS for location queries
+CREATE EXTENSION IF NOT EXISTS postgis;
+
+-- ============================================
+-- PROFILES TABLE
+-- ============================================
+CREATE TABLE profiles (
+  id UUID REFERENCES auth.users ON DELETE CASCADE PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  full_name TEXT,
+  avatar_url TEXT,
+  phone_number TEXT,
+  bio TEXT,
+  rating DECIMAL(2,1) DEFAULT 0,
+  total_trips INTEGER DEFAULT 0,
+  email_verified BOOLEAN DEFAULT FALSE,
+  phone_verified BOOLEAN DEFAULT FALSE,
+  id_verified BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Auto-create profile on user signup
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, email, full_name)
+  VALUES (NEW.id, NEW.email, NEW.raw_user_meta_data->>'full_name');
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE FUNCTION public.handle_new_user();
+
+-- ============================================
+-- TRIPS TABLE
+-- ============================================
+CREATE TABLE trips (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  creator_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  title TEXT NOT NULL,
+  description TEXT,
+  
+  -- Location data
+  pickup_location TEXT NOT NULL,
+  pickup_lat DECIMAL(10, 8) NOT NULL,
+  pickup_lng DECIMAL(11, 8) NOT NULL,
+  pickup_geography GEOGRAPHY(POINT, 4326),
+  
+  dropoff_location TEXT NOT NULL,
+  dropoff_lat DECIMAL(10, 8) NOT NULL,
+  dropoff_lng DECIMAL(11, 8) NOT NULL,
+  
+  -- Trip details
+  departure_time TIMESTAMP WITH TIME ZONE NOT NULL,
+  service_type TEXT NOT NULL, -- 'uber', 'bolt', 'lyft', 'other'
+  available_seats INTEGER NOT NULL CHECK (available_seats > 0),
+  total_seats INTEGER NOT NULL,
+  estimated_cost DECIMAL(10, 2),
+  
+  -- Status
+  status TEXT DEFAULT 'active' CHECK (status IN ('active', 'in_progress', 'completed', 'cancelled')),
+  
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create PostGIS geography column automatically
+CREATE OR REPLACE FUNCTION set_pickup_geography()
+RETURNS TRIGGER AS $$
+BEGIN
+  NEW.pickup_geography = ST_SetSRID(ST_MakePoint(NEW.pickup_lng, NEW.pickup_lat), 4326)::geography;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_set_pickup_geography
+  BEFORE INSERT OR UPDATE ON trips
+  FOR EACH ROW EXECUTE FUNCTION set_pickup_geography();
+
+-- Index for geographic queries
+CREATE INDEX idx_trips_pickup_geography ON trips USING GIST (pickup_geography);
+CREATE INDEX idx_trips_departure_time ON trips (departure_time);
+CREATE INDEX idx_trips_status ON trips (status);
+
+-- ============================================
+-- TRIP PARTICIPANTS TABLE
+-- ============================================
+CREATE TABLE trip_participants (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  seats_requested INTEGER DEFAULT 1,
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'left')),
+  payment_status TEXT DEFAULT 'unpaid' CHECK (payment_status IN ('unpaid', 'pending', 'paid', 'refunded')),
+  joined_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(trip_id, user_id)
+);
+
+CREATE INDEX idx_participants_trip ON trip_participants(trip_id);
+CREATE INDEX idx_participants_user ON trip_participants(user_id);
+
+-- ============================================
+-- MESSAGES TABLE
+-- ============================================
+CREATE TABLE messages (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE NOT NULL,
+  sender_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  content TEXT NOT NULL,
+  message_type TEXT DEFAULT 'text' CHECK (message_type IN ('text', 'system')),
+  read_by UUID[] DEFAULT ARRAY[]::UUID[],
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_messages_trip ON messages(trip_id, created_at DESC);
+
+-- ============================================
+-- REVIEWS TABLE
+-- ============================================
+CREATE TABLE reviews (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE NOT NULL,
+  reviewer_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  reviewee_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  rating INTEGER CHECK (rating >= 1 AND rating <= 5) NOT NULL,
+  comment TEXT,
+  tags TEXT[], -- ['punctual', 'friendly', 'clean']
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  UNIQUE(trip_id, reviewer_id, reviewee_id)
+);
+
+-- Update user rating automatically
+CREATE OR REPLACE FUNCTION update_user_rating()
+RETURNS TRIGGER AS $$
+BEGIN
+  UPDATE profiles
+  SET rating = (
+    SELECT AVG(rating)::DECIMAL(2,1)
+    FROM reviews
+    WHERE reviewee_id = NEW.reviewee_id
+  )
+  WHERE id = NEW.reviewee_id;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trigger_update_rating
+  AFTER INSERT ON reviews
+  FOR EACH ROW EXECUTE FUNCTION update_user_rating();
+
+-- ============================================
+-- PAYMENTS TABLE
+-- ============================================
+CREATE TABLE payments (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE NOT NULL,
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  amount DECIMAL(10, 2) NOT NULL,
+  stripe_payment_intent_id TEXT,
+  status TEXT DEFAULT 'pending' CHECK (status IN ('pending', 'succeeded', 'failed', 'refunded')),
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- ============================================
+-- NOTIFICATIONS TABLE
+-- ============================================
+CREATE TABLE notifications (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES profiles(id) ON DELETE CASCADE NOT NULL,
+  trip_id UUID REFERENCES trips(id) ON DELETE CASCADE,
+  type TEXT NOT NULL, -- 'trip_request', 'request_accepted', 'new_message', etc.
+  title TEXT NOT NULL,
+  body TEXT NOT NULL,
+  read BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_notifications_user ON notifications(user_id, created_at DESC);
+
+-- ============================================
+-- ROW LEVEL SECURITY (RLS)
+-- ============================================
+
+-- Enable RLS on all tables
+ALTER TABLE profiles ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trips ENABLE ROW LEVEL SECURITY;
+ALTER TABLE trip_participants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
+ALTER TABLE payments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE notifications ENABLE ROW LEVEL SECURITY;
+
+-- Profiles policies
+CREATE POLICY "Public profiles are viewable by everyone"
+  ON profiles FOR SELECT
+  USING (true);
+
+CREATE POLICY "Users can update own profile"
+  ON profiles FOR UPDATE
+  USING (auth.uid() = id);
+
+-- Trips policies
+CREATE POLICY "Trips are viewable by everyone"
+  ON trips FOR SELECT
+  USING (status = 'active' OR creator_id = auth.uid());
+
+CREATE POLICY "Users can create trips"
+  ON trips FOR INSERT
+  WITH CHECK (auth.uid() = creator_id);
+
+CREATE POLICY "Creators can update own trips"
+  ON trips FOR UPDATE
+  USING (auth.uid() = creator_id);
+
+-- Trip participants policies
+CREATE POLICY "Participants viewable by trip members"
+  ON trip_participants FOR SELECT
+  USING (
+    user_id = auth.uid() OR
+    trip_id IN (SELECT id FROM trips WHERE creator_id = auth.uid())
+  );
+
+CREATE POLICY "Users can join trips"
+  ON trip_participants FOR INSERT
+  WITH CHECK (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own participation"
+  ON trip_participants FOR UPDATE
+  USING (
+    user_id = auth.uid() OR
+    trip_id IN (SELECT id FROM trips WHERE creator_id = auth.uid())
+  );
+
+-- Messages policies
+CREATE POLICY "Messages viewable by trip participants"
+  ON messages FOR SELECT
+  USING (
+    trip_id IN (
+      SELECT trip_id FROM trip_participants
+      WHERE user_id = auth.uid() AND status = 'accepted'
+    ) OR
+    trip_id IN (SELECT id FROM trips WHERE creator_id = auth.uid())
+  );
+
+CREATE POLICY "Participants can send messages"
+  ON messages FOR INSERT
+  WITH CHECK (
+    auth.uid() = sender_id AND (
+      trip_id IN (
+        SELECT trip_id FROM trip_participants
+        WHERE user_id = auth.uid() AND status = 'accepted'
+      ) OR
+      trip_id IN (SELECT id FROM trips WHERE creator_id = auth.uid())
+    )
+  );
+
+-- Reviews policies
+CREATE POLICY "Reviews viewable by reviewee"
+  ON reviews FOR SELECT
+  USING (reviewee_id = auth.uid() OR reviewer_id = auth.uid());
+
+CREATE POLICY "Trip participants can leave reviews"
+  ON reviews FOR INSERT
+  WITH CHECK (
+    auth.uid() = reviewer_id AND
+    EXISTS (
+      SELECT 1 FROM trip_participants
+      WHERE trip_id = reviews.trip_id
+      AND user_id = auth.uid()
+      AND status = 'accepted'
+    )
+  );
+
+-- Notifications policies
+CREATE POLICY "Users can view own notifications"
+  ON notifications FOR SELECT
+  USING (auth.uid() = user_id);
+
+CREATE POLICY "Users can update own notifications"
+  ON notifications FOR UPDATE
+  USING (auth.uid() = user_id);
+
+-- ============================================
+-- HELPER FUNCTIONS
+-- ============================================
+
+-- Search nearby trips
+CREATE OR REPLACE FUNCTION search_nearby_trips(
+  user_lat DECIMAL,
+  user_lng DECIMAL,
+  radius_km INTEGER DEFAULT 10
+)
+RETURNS TABLE (
+  trip_id UUID,
+  title TEXT,
+  creator_name TEXT,
+  creator_avatar TEXT,
+  pickup_location TEXT,
+  dropoff_location TEXT,
+  departure_time TIMESTAMP WITH TIME ZONE,
+  available_seats INTEGER,
+  estimated_cost DECIMAL,
+  service_type TEXT,
+  distance_km DECIMAL
+) AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    t.id,
+    t.title,
+    p.full_name,
+    p.avatar_url,
+    t.pickup_location,
+    t.dropoff_location,
+    t.departure_time,
+    t.available_seats,
+    t.estimated_cost,
+    t.service_type,
+    ROUND(
+      ST_Distance(
+        t.pickup_geography,
+        ST_SetSRID(ST_MakePoint(user_lng, user_lat), 4326)::geography
+      ) / 1000, 2
+    ) AS distance_km
+  FROM trips t
+  JOIN profiles p ON t.creator_id = p.id
+  WHERE
+    t.status = 'active'
+    AND t.departure_time > NOW()
+    AND ST_DWithin(
+      t.pickup_geography,
+      ST_SetSRID(ST_MakePoint(user_lng, user_lat), 4326)::geography,
+      radius_km * 1000
+    )
+  ORDER BY distance_km ASC;
+END;
+$$ LANGUAGE plpgsql;
+
+-- Get user's trips
+CREATE OR REPLACE FUNCTION get_user_trips(user_uuid UUID)
+RETURNS TABLE (
+  trip_id UUID,
+  title TEXT,
+  pickup_location TEXT,
+  dropoff_location TEXT,
+  departure_time TIMESTAMP WITH TIME ZONE,
+  status TEXT,
+  is_creator BOOLEAN,
+  participant_status TEXT
+) AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    t.id,
+    t.title,
+    t.pickup_location,
+    t.dropoff_location,
+    t.departure_time,
+    t.status,
+    (t.creator_id = user_uuid) AS is_creator,
+    COALESCE(tp.status, 'creator') AS participant_status
+  FROM trips t
+  LEFT JOIN trip_participants tp ON t.id = tp.trip_id AND tp.user_id = user_uuid
+  WHERE
+    t.creator_id = user_uuid OR
+    tp.user_id = user_uuid
+  ORDER BY t.departure_time DESC;
+END;
+$$ LANGUAGE plpgsql;

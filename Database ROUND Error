@@ -1,0 +1,72 @@
+-- Drop the existing function
+DROP FUNCTION IF EXISTS search_nearby_trips(DECIMAL, DECIMAL, INTEGER);
+
+-- Recreate with ALL columns
+CREATE OR REPLACE FUNCTION search_nearby_trips(
+  user_lat DECIMAL,
+  user_lng DECIMAL,
+  radius_km INTEGER DEFAULT 10
+)
+RETURNS TABLE (
+  id UUID,
+  creator_id UUID,
+  title TEXT,
+  description TEXT,
+  pickup_location TEXT,
+  pickup_lat DECIMAL,
+  pickup_lng DECIMAL,
+  dropoff_location TEXT,
+  dropoff_lat DECIMAL,
+  dropoff_lng DECIMAL,
+  departure_time TIMESTAMP WITH TIME ZONE,
+  service_type TEXT,
+  available_seats INTEGER,
+  total_seats INTEGER,
+  estimated_cost DECIMAL,
+  status TEXT,
+  created_at TIMESTAMP WITH TIME ZONE,
+  updated_at TIMESTAMP WITH TIME ZONE,
+  distance_km DECIMAL
+) AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    t.id,
+    t.creator_id,
+    t.title,
+    t.description,
+    t.pickup_location,
+    t.pickup_lat,
+    t.pickup_lng,
+    t.dropoff_location,
+    t.dropoff_lat,
+    t.dropoff_lng,
+    t.departure_time,
+    t.service_type,
+    t.available_seats,
+    t.total_seats,
+    t.estimated_cost,
+    t.status,
+    t.created_at,
+    t.updated_at,
+    -- Cast to numeric before rounding
+    ROUND(
+      CAST(
+        ST_Distance(
+          t.pickup_geography,
+          ST_SetSRID(ST_MakePoint(user_lng, user_lat), 4326)::geography
+        ) / 1000 AS NUMERIC
+      ), 2
+    ) AS distance_km
+  FROM trips t
+  WHERE
+    t.status = 'active'
+    AND t.departure_time > NOW()
+    AND ST_DWithin(
+      t.pickup_geography,
+      ST_SetSRID(ST_MakePoint(user_lng, user_lat), 4326)::geography,
+      radius_km * 1000
+    )
+  ORDER BY distance_km ASC;
+END;
+$$ LANGUAGE plpgsql;

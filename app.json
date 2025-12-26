@@ -14,12 +14,39 @@
       "backgroundColor": "#ffffff"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.auralogic.buddyup",
+      "config": {
+        "googleMapsApiKey": "AIzaSyAMhzATki08RST4iEy43GDe7P5WhyvXuvk"
+      },
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "BuddyUp needs access to your location to find nearby trips and show them on the map.",
+        "NSCameraUsageDescription": "BuddyUp needs access to your camera to take profile pictures.",
+        "NSPhotoLibraryUsageDescription": "BuddyUp needs access to your photo library to select profile pictures.",
+        "NSPhotoLibraryAddUsageDescription": "BuddyUp needs permission to save photos to your library.",
+        "NSUserNotificationsUsageDescription": "BuddyUp needs permission to send you notifications about trip requests, messages, and updates."
+      },
+      "googleServicesFile": "./GoogleService-Info.plist"
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/images/adaptive-icon.png",
         "backgroundColor": "#ffffff"
+      },
+      "package": "com.auralogic.buddyup",
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "CAMERA",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE",
+        "READ_MEDIA_IMAGES"
+      ],
+      "googleServicesFile": "./google-services.json",
+      "config": {
+        "googleMaps": {
+          "apiKey": "AIzaSyAMhzATki08RST4iEy43GDe7P5WhyvXuvk"
+        }
       },
       "edgeToEdgeEnabled": true,
       "predictiveBackGestureEnabled": false
@@ -30,7 +57,36 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Allow BuddyUp to use your location to find nearby trips."
+        }
+      ],
+      [
+        "@react-native-firebase/app",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
+      ],
+      [
+        "@react-native-firebase/messaging",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "BuddyUp needs access to your photos to set your profile picture.",
+          "cameraPermission": "BuddyUp needs access to your camera to take profile pictures."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true
