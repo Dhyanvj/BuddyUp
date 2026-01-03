@@ -335,11 +335,6 @@ export default function ProfileScreen() {
 
         {/* Account Actions */}
         <View style={styles.actionsSection}>
-          <TouchableOpacity style={styles.actionItem}>
-            <Text style={styles.actionIcon}>🔔</Text>
-            <Text style={styles.actionText}>Notification Settings</Text>
-          </TouchableOpacity>
-          
           <TouchableOpacity 
             style={styles.actionItem}
             onPress={() => router.push('/main/privacy-settings')}

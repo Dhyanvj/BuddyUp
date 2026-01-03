@@ -127,7 +127,7 @@ export const subscribeToNotifications = (
   onNotification: (notification: Notification) => void,
   onUnreadCountChange?: (count: number) => void
 ): RealtimeChannel => {
-  console.log('Setting up Realtime notification subscription for user:', userId);
+  console.log('🔔 [Realtime] Setting up notification subscription for user:', userId);
 
   const channel = supabase
     .channel(`notifications:${userId}`)
@@ -140,13 +140,17 @@ export const subscribeToNotifications = (
         filter: `user_id=eq.${userId}`,
       },
       (payload) => {
-        console.log('New notification received via Realtime:', payload);
+        console.log('🔔 [Realtime] New notification INSERT event:', payload);
         const notification = payload.new as Notification;
+        console.log('🔔 [Realtime] Notification data:', notification);
         onNotification(notification);
 
         // Update unread count if callback provided
         if (onUnreadCountChange) {
-          getUnreadCount(userId).then(onUnreadCountChange);
+          getUnreadCount(userId).then((count) => {
+            console.log('🔔 [Realtime] Updated unread count:', count);
+            onUnreadCountChange(count);
+          });
         }
       }
     )
@@ -159,11 +163,14 @@ export const subscribeToNotifications = (
         filter: `user_id=eq.${userId}`,
       },
       (payload) => {
-        console.log('Notification updated via Realtime:', payload);
+        console.log('🔔 [Realtime] Notification UPDATE event:', payload);
         
         // Update unread count if callback provided
         if (onUnreadCountChange) {
-          getUnreadCount(userId).then(onUnreadCountChange);
+          getUnreadCount(userId).then((count) => {
+            console.log('🔔 [Realtime] Updated unread count:', count);
+            onUnreadCountChange(count);
+          });
         }
       }
     )
@@ -176,16 +183,29 @@ export const subscribeToNotifications = (
         filter: `user_id=eq.${userId}`,
       },
       (payload) => {
-        console.log('Notification deleted via Realtime:', payload);
+        console.log('🔔 [Realtime] Notification DELETE event:', payload);
         
         // Update unread count if callback provided
         if (onUnreadCountChange) {
-          getUnreadCount(userId).then(onUnreadCountChange);
+          getUnreadCount(userId).then((count) => {
+            console.log('🔔 [Realtime] Updated unread count:', count);
+            onUnreadCountChange(count);
+          });
         }
       }
     )
-    .subscribe((status) => {
-      console.log('Notification subscription status:', status);
+    .subscribe((status, err) => {
+      if (status === 'SUBSCRIBED') {
+        console.log('✅ [Realtime] Successfully subscribed to notifications channel');
+      } else if (status === 'CHANNEL_ERROR') {
+        console.error('❌ [Realtime] Channel error:', err);
+      } else if (status === 'TIMED_OUT') {
+        console.error('⏱️ [Realtime] Subscription timed out');
+      } else if (status === 'CLOSED') {
+        console.log('🔒 [Realtime] Channel closed');
+      } else {
+        console.log('🔔 [Realtime] Subscription status:', status);
+      }
     });
 
   return channel;
@@ -199,9 +219,9 @@ export const unsubscribeFromNotifications = async (
 ): Promise<void> => {
   try {
     await supabase.removeChannel(channel);
-    console.log('Unsubscribed from notification updates');
+    console.log('🔕 [Realtime] Unsubscribed from notification updates');
   } catch (error) {
-    console.error('Error unsubscribing from notifications:', error);
+    console.error('❌ [Realtime] Error unsubscribing from notifications:', error);
   }
 };
 

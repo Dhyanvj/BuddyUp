@@ -10,6 +10,7 @@ import {
   Alert,
   ActivityIndicator,
   Linking,
+  Platform,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { useAuth } from '../../contexts/AuthContext';
@@ -18,6 +19,12 @@ import {
   updatePrivacySettings,
   requestAccountDeletion,
 } from '../../services/privacyHelpers';
+import {
+  checkNotificationPermission,
+  requestNotificationPermission,
+  registerForFCMNotifications,
+  deleteFCMToken,
+} from '../../services/fcmNotificationService';
 
 type ProfileVisibility = 'public' | 'limited' | 'private';
 type LocationSharing = 'always' | 'trips_only' | 'off';
@@ -42,9 +49,12 @@ export default function PrivacySettingsScreen() {
     show_phone: false,
     allow_messages: true,
   });
+  const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [checkingPermission, setCheckingPermission] = useState(false);
 
   useEffect(() => {
     loadPrivacySettings();
+    checkNotificationStatus();
   }, [profile]);
 
   const loadPrivacySettings = async () => {
@@ -90,6 +100,94 @@ export default function PrivacySettingsScreen() {
 
   const handleLocationSharingChange = (sharing: LocationSharing) => {
     setSettings({ ...settings, location_sharing: sharing });
+  };
+
+  const checkNotificationStatus = async () => {
+    try {
+      const hasPermission = await checkNotificationPermission();
+      setNotificationsEnabled(hasPermission);
+    } catch (error) {
+      console.error('Error checking notification permission:', error);
+      setNotificationsEnabled(false);
+    }
+  };
+
+  const handleNotificationToggle = async (value: boolean) => {
+    if (!profile) return;
+
+    setCheckingPermission(true);
+    try {
+      if (value) {
+        // User wants to enable notifications
+        const hasPermission = await requestNotificationPermission();
+        
+        if (hasPermission) {
+          // Register for FCM notifications
+          const token = await registerForFCMNotifications(profile.id);
+          if (token) {
+            setNotificationsEnabled(true);
+            Alert.alert(
+              'Notifications Enabled',
+              'You will now receive push notifications for trip updates, messages, and more.'
+            );
+          } else {
+            Alert.alert(
+              'Setup Failed',
+              'Could not complete notification setup. Please try again.'
+            );
+            setNotificationsEnabled(false);
+          }
+        } else {
+          // Permission denied
+          Alert.alert(
+            'Permission Required',
+            'Please enable notifications in your device settings to receive push notifications.',
+            [
+              { text: 'Cancel', style: 'cancel' },
+              {
+                text: 'Open Settings',
+                onPress: () => {
+                  if (Platform.OS === 'ios') {
+                    Linking.openURL('app-settings:');
+                  } else {
+                    Linking.openSettings();
+                  }
+                },
+              },
+            ]
+          );
+          setNotificationsEnabled(false);
+        }
+      } else {
+        // User wants to disable notifications
+        Alert.alert(
+          'Disable Notifications',
+          'Are you sure you want to disable push notifications? You will no longer receive alerts for trip updates, messages, and other important events.',
+          [
+            { text: 'Cancel', style: 'cancel' },
+            {
+              text: 'Disable',
+              style: 'destructive',
+              onPress: async () => {
+                await deleteFCMToken(profile.id);
+                setNotificationsEnabled(false);
+                Alert.alert(
+                  'Notifications Disabled',
+                  'You will no longer receive push notifications. You can re-enable them anytime from Privacy Settings.'
+                );
+              },
+            },
+          ]
+        );
+      }
+    } catch (error) {
+      console.error('Error toggling notifications:', error);
+      Alert.alert('Error', 'Could not update notification settings');
+      // Revert to previous state
+      await checkNotificationStatus();
+    } finally {
+      setCheckingPermission(false);
+    }
   };
 
   const handleRequestDeletion = () => {
@@ -170,6 +268,62 @@ export default function PrivacySettingsScreen() {
           <Text style={styles.explanationText}>
             You have full control over your privacy settings below.
           </Text>
+        </View>
+
+        {/* Push Notifications */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Push Notifications</Text>
+          <Text style={styles.sectionDescription}>
+            Control whether you receive push notifications
+          </Text>
+
+          <View style={styles.notificationCard}>
+            <View style={styles.notificationHeader}>
+              <View style={styles.notificationIconContainer}>
+                <Text style={styles.notificationIcon}>🔔</Text>
+              </View>
+              <View style={styles.notificationContent}>
+                <Text style={styles.notificationTitle}>Push Notifications</Text>
+                <Text style={styles.notificationStatus}>
+                  Status: {notificationsEnabled ? '✓ Enabled' : '✗ Disabled'}
+                </Text>
+                <Text style={styles.notificationDescription}>
+                  {notificationsEnabled
+                    ? 'You will receive notifications for trip updates, messages, and important events.'
+                    : 'Enable to receive real-time updates about your trips and messages.'}
+                </Text>
+              </View>
+            </View>
+
+            <View style={styles.toggleRow}>
+              <View style={styles.toggleContent}>
+                <Text style={styles.toggleTitle}>Enable Push Notifications</Text>
+                <Text style={styles.toggleDescription}>
+                  Get notified about trip requests, messages, and updates
+                </Text>
+              </View>
+              {checkingPermission ? (
+                <ActivityIndicator color="#007AFF" size="small" />
+              ) : (
+                <Switch
+                  value={notificationsEnabled}
+                  onValueChange={handleNotificationToggle}
+                  trackColor={{ false: '#e0e0e0', true: '#007AFF' }}
+                  thumbColor="#fff"
+                  disabled={checkingPermission}
+                />
+              )}
+            </View>
+
+            {!notificationsEnabled && (
+              <View style={styles.notificationWarning}>
+                <Text style={styles.notificationWarningIcon}>⚠️</Text>
+                <Text style={styles.notificationWarningText}>
+                  You may miss important updates about your trips if notifications are disabled.
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
 
         {/* Profile Visibility */}
@@ -558,6 +712,69 @@ const styles = StyleSheet.create({
   toggleDescription: {
     fontSize: 13,
     color: '#666',
+  },
+  notificationCard: {
+    backgroundColor: '#f8f8f8',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+  },
+  notificationHeader: {
+    flexDirection: 'row',
+    marginBottom: 16,
+  },
+  notificationIconContainer: {
+    width: 50,
+    height: 50,
+    borderRadius: 25,
+    backgroundColor: '#007AFF',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+  },
+  notificationIcon: {
+    fontSize: 24,
+  },
+  notificationContent: {
+    flex: 1,
+  },
+  notificationTitle: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#1a1a1a',
+    marginBottom: 4,
+  },
+  notificationStatus: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#007AFF',
+    marginBottom: 6,
+  },
+  notificationDescription: {
+    fontSize: 13,
+    color: '#666',
+    lineHeight: 18,
+  },
+  notificationWarning: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    backgroundColor: '#FFF9E6',
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#FFE5B4',
+  },
+  notificationWarningIcon: {
+    fontSize: 16,
+    marginRight: 8,
+    marginTop: 2,
+  },
+  notificationWarningText: {
+    flex: 1,
+    fontSize: 13,
+    color: '#856404',
+    lineHeight: 18,
   },
   linkCard: {
     flexDirection: 'row',

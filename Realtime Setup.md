@@ -9,6 +9,7 @@ To enable real-time updates in the app, you need to enable Realtime on the follo
 1. **trips** - For trip updates (edits, cancellations, status changes)
 2. **trip_participants** - For join requests, acceptances, rejections
 3. **messages** - For real-time chat messaging
+4. **notifications** - For real-time notification updates in the app
 
 ### How to Enable Realtime in Supabase:
 
@@ -19,6 +20,7 @@ To enable real-time updates in the app, you need to enable Realtime on the follo
    - ✅ `trips`
    - ✅ `trip_participants`
    - ✅ `messages`
+   - ✅ `notifications`
 
 Alternatively, you can run this SQL in the Supabase SQL Editor:
 
@@ -34,6 +36,10 @@ ALTER PUBLICATION supabase_realtime ADD TABLE trip_participants;
 -- Enable realtime for messages table
 ALTER TABLE messages REPLICA IDENTITY FULL;
 ALTER PUBLICATION supabase_realtime ADD TABLE messages;
+
+-- Enable realtime for notifications table
+ALTER TABLE notifications REPLICA IDENTITY FULL;
+ALTER PUBLICATION supabase_realtime ADD TABLE notifications;
 ```
 
 ## What Gets Synced in Real-Time:
@@ -62,6 +68,12 @@ ALTER PUBLICATION supabase_realtime ADD TABLE messages;
 - Real-time message delivery
 - No manual refresh needed
 - Auto-scroll to new messages
+
+### NotificationsScreen
+- New notifications appear instantly
+- Real-time unread count updates
+- No manual refresh needed
+- Automatic UI updates when notifications are read/deleted
 
 ## How It Works:
 

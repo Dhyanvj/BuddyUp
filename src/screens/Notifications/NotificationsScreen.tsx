@@ -66,25 +66,34 @@ export default function NotificationsScreen() {
   };
 
   const setupRealtimeSubscription = () => {
-    if (!profile) return;
+    if (!profile) {
+      console.log('⚠️ [Notifications] No profile, skipping realtime subscription');
+      return;
+    }
 
+    console.log('🔔 [Notifications] Setting up realtime subscription for:', profile.id);
+    
     const channel = subscribeToNotifications(
       profile.id,
       (notification) => {
+        console.log('🔔 [Notifications] Received new notification, updating UI:', notification);
         // Add new notification to the list
         setNotifications(prev => [notification, ...prev]);
       },
       (count) => {
+        console.log('🔔 [Notifications] Unread count updated:', count);
         setUnreadCount(count);
         setBadgeCount(count);
       }
     );
 
     subscriptionRef.current = channel;
+    console.log('✅ [Notifications] Realtime subscription setup complete');
   };
 
   const cleanupSubscription = async () => {
     if (subscriptionRef.current) {
+      console.log('🔕 [Notifications] Cleaning up realtime subscription');
       await unsubscribeFromNotifications(subscriptionRef.current);
       subscriptionRef.current = null;
     }
